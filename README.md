@@ -8,7 +8,7 @@
 
 ```bash
 npm install
-npm run models   # 下载模型到 public/models/（约 320 MB，只需一次）
+npm run models   # 下载模型到 public/models/（约 410 MB，只需一次）
 npm run dev
 ```
 
@@ -26,6 +26,7 @@ node scripts/test-pipeline.ts public/samples/anime.jpg public/samples/real.jpg o
 | 步骤 | 做法 | 模型 |
 | --- | --- | --- |
 | 抠人物 | 动漫专用的显著性分割，输出逐像素 alpha | [anime-seg](https://huggingface.co/skytnt/anime-seg)（ISNet，176 MB） |
+| 补回深色衣服 | anime-seg 遇到"深色衣服 + 深色或低对比背景"会把黑外套、黑裤子抠丢；再跑一个人像分割模型，只采纳与已认出的人物连在一起的部分。只在有 WebGPU 时启用 | [ormbg](https://huggingface.co/onnx-community/ormbg-ONNX)（ISNet，半精度 88 MB） |
 | 场景匹配 | 两张图各取 2000 个关键点并互相匹配，人物身上的点不参与 | [ALIKED + LightGlue](https://huggingface.co/bukuroo/ALIKED-LightGlue-ONNX)（6 + 46 MB） |
 | 估计对齐 | RANSAC 求"动漫 → 实景"的相似变换，再做仿射精修；有视差时让人物附近的对应点权重更高 | 纯 TypeScript，见 `src/core/align.ts` |
 | 兜底 | 关键点对不上时（画风与实景差异大），改用语义 patch 特征做粗略对齐 | [DINOv2-small](https://huggingface.co/onnx-community/dinov2-with-registers-small)（88 MB，用到时才下载） |
@@ -44,6 +45,7 @@ node scripts/test-pipeline.ts public/samples/anime.jpg public/samples/real.jpg o
 - 落在画面内 ≥ 95%：正常生成；
 - 50%–95%：照常生成，并提示人物有多少、从哪一侧被画面裁掉；
 - 不足 50%：提示"实景照片没有拍到人物所在的位置"，不生成。
+  - 例外：人物在动漫里本来就被画面底边截断（半身近景）时，不拒绝，而是让截断处贴着实景照片的底边摆放。
 
 ## 目录
 
@@ -61,7 +63,8 @@ public/samples  示例图片（来源见 CREDITS.md）
 - 两张图机位差得远（比如换了个方向拍）时不会判为同一场景。
 - 人物被前景遮挡的关系不会还原：人物永远画在实景照片的最上层。
 - 一张图里有多个人物时会一起抠出、整体摆放，暂不支持单独挑选。
-- 首次使用要下载约 230 MB 模型；抠图模型可以转成 fp16 减半，尚未做。
+- 深色衣服仍可能抠不全：在 4 组真实动漫截图上，补充模型补回了夜景里的黑外套和吉他包，但有一组后排人物的深色裤子两个模型都漏了。效果更好的 BiRefNet 在浏览器里内存不够（WASM 4 GB 上限），没能用上。
+- 首次使用要下载约 320 MB 模型；抠图模型可以转成 fp16 减半，尚未做。
 
 ## 部署
 

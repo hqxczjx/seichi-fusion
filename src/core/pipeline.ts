@@ -4,13 +4,14 @@ import { estimateAlignment, matchFeatures, placementFromMatrix, type AlignResult
 import { extractFeatures } from './features.ts';
 import type { RGBAImage } from './image.ts';
 import { matchKeypoints } from './matcher.ts';
-import { alphaBounds, segmentCharacter } from './matting.ts';
+import { alphaBounds, mergeAlphas, segmentCharacter, segmentPerson } from './matting.ts';
 import type { OrtLike, SessionLike } from './ort-types.ts';
 
-export type ModelName = 'matting' | 'extractor' | 'matcher' | 'features';
+export type ModelName = 'matting' | 'matting2' | 'extractor' | 'matcher' | 'features';
 
 export const MODEL_FILES: Record<ModelName, string> = {
   matting: 'anime-seg.onnx',
+  matting2: 'ormbg-fp16.onnx',
   extractor: 'aliked-n16rot-640.onnx',
   matcher: 'lightglue-aliked.onnx',
   features: 'dinov2-reg-small.onnx',
@@ -45,7 +46,15 @@ export interface Framing {
   visible: number;
   /** 人物从哪几条边超出了画面 */
   overflow: Side[];
+  /**
+   * 人物在动漫里本来就被画面底边截断（半身近景），而按场景对齐算出的位置大半落在实景画面之外时，
+   * 改为让截断处贴着实景照片的底边摆放。这时为 true。
+   */
+  snappedToBottom: boolean;
 }
+
+/** 人物落在实景画面内的比例低于此值：视为"没拍到人物所在的位置" */
+export const MIN_VISIBLE = 0.5;
 
 /**
  * 两张图取景有偏移时，人物在实景里"该站的位置"可能没被拍进去。
@@ -59,7 +68,7 @@ export function measureFraming(
   realWidth: number,
   realHeight: number,
 ): Framing {
-  if (!bounds) return { visible: 1, overflow: [] };
+  if (!bounds) return { visible: 1, overflow: [], snappedToBottom: false };
   const anchorX = bounds.x + bounds.w / 2;
   const anchorY = bounds.y + bounds.h;
   const cos = Math.cos(placement.rotation) * placement.scale;
@@ -88,15 +97,17 @@ export function measureFraming(
       if (ry >= realHeight + tolY) out.bottom += a;
     }
   }
-  if (total === 0) return { visible: 1, overflow: [] };
+  if (total === 0) return { visible: 1, overflow: [], snappedToBottom: false };
   const overflow = (Object.keys(out) as Side[]).filter((s) => out[s] / total > 0.01);
-  return { visible: inside / total, overflow };
+  return { visible: inside / total, overflow, snappedToBottom: false };
 }
 
 export interface PipelineEnv {
   ort: OrtLike;
   /** 按需加载模型（features 只有在兜底时才会被请求） */
   getSession(name: ModelName): Promise<SessionLike>;
+  /** 是否启用第二个抠图模型来补回深色衣服（多下载约 90 MB，浏览器里只在有 WebGPU 时开启）。默认开启 */
+  refineMatting?: boolean;
   onStage?(stage: Stage): void;
 }
 
@@ -104,7 +115,11 @@ export async function runPipeline(env: PipelineEnv, anime: RGBAImage, real: RGBA
   const { ort } = env;
 
   env.onStage?.('matting');
-  const alpha = await segmentCharacter(ort, await env.getSession('matting'), anime);
+  let alpha = await segmentCharacter(ort, await env.getSession('matting'), anime);
+  if (env.refineMatting !== false) {
+    const person = await segmentPerson(ort, await env.getSession('matting2'), anime);
+    alpha = mergeAlphas(alpha, person, anime.width, anime.height);
+  }
   const bounds = alphaBounds(alpha, anime.width, anime.height);
   const anchor = bounds
     ? { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h }
@@ -177,7 +192,21 @@ export async function runPipeline(env: PipelineEnv, anime: RGBAImage, real: RGBA
           rotation: 0,
         };
 
-  const framing = measureFraming(alpha, anime.width, bounds, placement, real.width, real.height);
+  let framing = measureFraming(alpha, anime.width, bounds, placement, real.width, real.height);
+
+  // 半身近景：人物在动漫里就被底边截断，说明它站在镜头跟前、脚在画面外。
+  // 实景照片的下沿往往拍得没动漫那么低，按场景对齐算出来人物会掉到画面下面去。
+  // 这种人物的"正确位置"本来就是贴着画面底边，所以把截断处对到实景照片的底边上，水平位置和大小不变。
+  // 留 1.5% 的余量：截图常带几像素的边框或黑边
+  const cutAtBottom = bounds !== null && bounds.y + bounds.h >= anime.height * 0.985;
+  if (level !== 'none' && cutAtBottom && framing.visible < MIN_VISIBLE && placement.y > real.height) {
+    placement.y = real.height;
+    placement.rotation = 0;
+    framing = {
+      ...measureFraming(alpha, anime.width, bounds, placement, real.width, real.height),
+      snappedToBottom: true,
+    };
+  }
 
   env.onStage?.('done');
   return { alpha, bounds, level, align, placement, framing };

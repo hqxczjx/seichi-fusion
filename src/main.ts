@@ -1,5 +1,5 @@
 import type { Placement } from './core/align.ts';
-import type { ModelName, Stage } from './core/pipeline.ts';
+import { MIN_VISIBLE, type ModelName, type Stage } from './core/pipeline.ts';
 import type { RawImage, ResultPayload, RunRequest, WorkerMessage } from './protocol.ts';
 
 /** 处理与输出的最长边上限（像素）。再大对效果没有帮助，只会更慢更占内存 */
@@ -23,8 +23,6 @@ const cTone = $<HTMLInputElement>('c-tone');
 const cShadow = $<HTMLInputElement>('c-shadow');
 const cPoints = $<HTMLInputElement>('c-points');
 
-/** 人物落在实景画面内的比例低于此值：视为"没拍到人物所在的位置"，不生成 */
-const MIN_VISIBLE = 0.5;
 /** 低于此值（但不低于 MIN_VISIBLE）：照常生成，但提示人物被画面边缘裁掉了一部分 */
 const FULL_VISIBLE = 0.95;
 const SIDE_LABEL = { top: '上方', bottom: '下方', left: '左侧', right: '右侧' } as const;
@@ -138,6 +136,7 @@ const STAGE_TEXT: Record<Stage, string> = {
 };
 const MODEL_LABEL: Record<ModelName, string> = {
   matting: '人物抠图模型',
+  matting2: '人物抠图补充模型',
   extractor: '关键点模型',
   matcher: '场景匹配模型',
   features: '语义特征模型',
@@ -273,7 +272,7 @@ function buildCharacter(anime: ImageData, real: ImageData, r: ResultPayload): Ch
     canvas: c,
     anchorX: b.x + b.w / 2 - x0,
     anchorY: b.y + b.h - y0,
-    cutOff: b.y + b.h >= anime.height - 2,
+    cutOff: b.y + b.h >= anime.height * 0.985,
     gain,
     bias,
   };
@@ -386,6 +385,12 @@ function showResult(r: ResultPayload) {
     );
   } else if (!character) {
     say('none', '场景一致，但没有在动漫图里找到人物', '请换一张画面里有人物的截图。');
+  } else if (r.framing.snappedToBottom) {
+    say(
+      r.level === 'precise' ? 'precise' : 'rough',
+      r.level === 'precise' ? '场景一致' : '场景大致一致',
+      `${r.level === 'precise' ? `找到 ${r.inliers} 处一致的对应点。` : ''}人物是贴着画面底边的近景，实景照片的下沿没拍到那么低，所以让人物贴着实景照片的底边摆放，可以拖动微调。`,
+    );
   } else if (r.framing.visible < FULL_VISIBLE) {
     say(
       'rough',

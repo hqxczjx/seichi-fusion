@@ -4,3 +4,4 @@ public/models/*.onnx
 public/ort
 *.part
 .DS_Store
+public/test

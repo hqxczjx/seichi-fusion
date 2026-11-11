@@ -56,7 +56,7 @@ console.log(
       spread: +result.spread.toFixed(3),
       score: +result.score.toFixed(3),
       placement: Object.fromEntries(Object.entries(placement).map(([k, v]) => [k, +v.toFixed(3)])),
-      framing: { visible: +framing.visible.toFixed(3), overflow: framing.overflow },
+      framing: { visible: +framing.visible.toFixed(3), overflow: framing.overflow, snappedToBottom: framing.snappedToBottom },
       ms: Object.fromEntries(timeline.slice(1).map(([name, t], i) => [name, Math.round(t - timeline[i][1])])),
     },
     null,

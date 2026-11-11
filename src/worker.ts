@@ -15,6 +15,7 @@ const MODEL_BASE: string = import.meta.env.VITE_MODEL_BASE ?? `${BASE}models/`;
 const HF: string = import.meta.env.VITE_HF_ENDPOINT ?? 'https://huggingface.co';
 const HF_PATHS: Record<ModelName, string> = {
   matting: 'skytnt/anime-seg/resolve/main/isnetis.onnx',
+  matting2: 'onnx-community/ormbg-ONNX/resolve/main/onnx/model_fp16.onnx',
   extractor: 'bukuroo/ALIKED-LightGlue-ONNX/resolve/main/aliked-n16rot-top2k-640.onnx',
   matcher: 'bukuroo/ALIKED-LightGlue-ONNX/resolve/main/lightglue_for_aliked.onnx',
   features: 'onnx-community/dinov2-with-registers-small/resolve/main/onnx/model.onnx',
@@ -186,9 +187,9 @@ const sessions = new Map<ModelName, Promise<SessionLike>>();
 /** 实际用上的推理后端，展示给用户看 */
 const backends = new Map<ModelName, string>();
 
-// 有 WebGPU 时这三个模型放到显卡上跑（实测比多线程 WASM 快 2-3 倍，结果一致）；
+// 有 WebGPU 时这几个模型放到显卡上跑（实测比多线程 WASM 快 2-3 倍，结果一致）；
 // 兜底用的语义特征模型输入尺寸不固定且很少用到，留在 WASM 上。
-const GPU_MODELS: ReadonlySet<ModelName> = new Set<ModelName>(['matting', 'extractor', 'matcher']);
+const GPU_MODELS: ReadonlySet<ModelName> = new Set<ModelName>(['matting', 'matting2', 'extractor', 'matcher']);
 const hasWebGPU = 'gpu' in navigator;
 
 async function createSession(bytes: ArrayBuffer, provider: 'webgpu' | 'wasm'): Promise<SessionLike> {
@@ -218,7 +219,8 @@ function getSession(name: ModelName, id: number): Promise<SessionLike> {
       try {
         gpu = await createSession(bytes, 'webgpu');
         backends.set(name, 'webgpu');
-      } catch {
+      } catch (err) {
+        console.warn(`[seichi] ${name} 无法在 WebGPU 上初始化，改用 WASM：`, err);
         return useWasm();
       }
       return {
@@ -228,7 +230,8 @@ function getSession(name: ModelName, id: number): Promise<SessionLike> {
           if (wasm) return (await wasm).run(feeds);
           try {
             return await gpu.run(feeds);
-          } catch {
+          } catch (err) {
+            console.warn(`[seichi] ${name} 在 WebGPU 上推理失败，改用 WASM：`, err);
             return (await useWasm()).run(feeds);
           }
         },
@@ -255,6 +258,8 @@ const handleRun = async (ev: MessageEvent<RunRequest>) => {
       {
         ort: ort as unknown as OrtLike,
         getSession: (name) => getSession(name, id),
+        // 补充抠图模型是半精度的，只在 WebGPU 上跑；没有 WebGPU 时跳过（少下 90 MB，深色衣服可能抠不全）
+        refineMatting: hasWebGPU,
         onStage: (stage) => {
           const now = performance.now();
           marks.push(`${stage}@${Math.round(now - last)}ms`);
