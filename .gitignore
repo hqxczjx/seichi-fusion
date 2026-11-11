@@ -1,0 +1,6 @@
+node_modules
+dist
+public/models/*.onnx
+public/ort
+*.part
+.DS_Store

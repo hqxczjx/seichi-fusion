@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="上传一张动漫截图和一张实景照片，自动把动漫人物放进现实里的同一个位置。" />
+    <title>次元融合 · 圣地巡礼合成器</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">圣地巡礼合成器</p>
+        <h1>让<span class="a2d">二次元</span>站进<span class="a3d">三次元</span></h1>
+        <p class="lede">
+          上传动漫里的一幕，和这一幕取景地的实景照片。系统先比对两张图是不是同一个场景：一致，就把动漫人物抠出来放到实景照片里的相同位置；不一致，会直接告诉你。
+        </p>
+      </header>
+
+      <section class="inputs" aria-label="上传图片">
+        <label class="drop" id="drop-anime" data-kind="anime">
+          <input type="file" accept="image/*" hidden />
+          <img alt="" hidden />
+          <span class="drop-hint">
+            <strong>动漫截图</strong>
+            <span>点击选择，或把图片拖到这里</span>
+          </span>
+          <span class="tag a2d-bg">二次元</span>
+        </label>
+        <label class="drop" id="drop-real" data-kind="real">
+          <input type="file" accept="image/*" hidden />
+          <img alt="" hidden />
+          <span class="drop-hint">
+            <strong>实景照片</strong>
+            <span>点击选择，或把图片拖到这里</span>
+          </span>
+          <span class="tag a3d-bg">三次元</span>
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="run" class="primary" disabled>开始融合</button>
+        <button id="sample" class="ghost">用示例图片试试</button>
+      </section>
+
+      <section id="status" class="status" hidden aria-live="polite">
+        <div class="status-line">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="status-text"></span>
+        </div>
+        <div class="bar" id="bar" hidden><div id="bar-fill"></div></div>
+      </section>
+
+      <section id="result" class="result" hidden>
+        <div id="verdict" class="verdict"></div>
+        <div id="composite">
+        <div class="stage">
+          <canvas id="canvas" aria-label="合成结果，可拖动人物调整位置"></canvas>
+        </div>
+        <p class="hint">拖动人物可以移动位置，滚轮或下方滑块调整大小。</p>
+        <div class="controls">
+          <label>大小 <input id="c-scale" type="range" min="-1.2" max="1.2" step="0.005" value="0" /></label>
+          <label>旋转 <input id="c-rot" type="range" min="-30" max="30" step="0.25" value="0" /></label>
+          <label>色调融合 <input id="c-tone" type="range" min="0" max="1" step="0.01" value="0.35" /></label>
+          <label>脚下阴影 <input id="c-shadow" type="range" min="0" max="1" step="0.01" value="0.3" /></label>
+          <label class="check"><input id="c-points" type="checkbox" /> 显示对应点</label>
+        </div>
+        <div class="actions">
+          <button id="download" class="primary">下载合成图</button>
+          <button id="reset" class="ghost">恢复自动位置</button>
+        </div>
+        </div>
+        <p id="meta" class="meta"></p>
+      </section>
+
+      <footer>
+        <p>图片只在你的浏览器里处理，不会上传到任何服务器。首次使用需要下载约 230&nbsp;MB 的模型，之后会缓存在浏览器中。</p>
+        <p>请只合成你有权使用的图片；动漫截图的版权归原作权利人所有。</p>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

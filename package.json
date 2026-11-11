@@ -1,0 +1,26 @@
+{
+  "name": "seichi-fusion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "models": "node scripts/fetch-models.mjs",
+    "test:pipeline": "node scripts/test-pipeline.ts",
+    "predev": "node scripts/copy-ort.mjs",
+    "prebuild": "node scripts/copy-ort.mjs",
+    "prepreview": "node scripts/copy-ort.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.31.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "onnxruntime-node": "^1.31.1",
+    "sharp": "^0.35.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7"
+  }
+}
