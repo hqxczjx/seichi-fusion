@@ -16,6 +16,7 @@ const HF: string = import.meta.env.VITE_HF_ENDPOINT ?? 'https://huggingface.co';
 const HF_PATHS: Record<ModelName, string> = {
   matting: 'skytnt/anime-seg/resolve/main/isnetis.onnx',
   matting2: 'onnx-community/ormbg-ONNX/resolve/main/onnx/model_fp16.onnx',
+  matting3: 'onnx-community/ISNet-ONNX/resolve/main/onnx/model_fp16.onnx',
   extractor: 'bukuroo/ALIKED-LightGlue-ONNX/resolve/main/aliked-n16rot-top2k-640.onnx',
   matcher: 'bukuroo/ALIKED-LightGlue-ONNX/resolve/main/lightglue_for_aliked.onnx',
   features: 'onnx-community/dinov2-with-registers-small/resolve/main/onnx/model.onnx',
@@ -189,7 +190,7 @@ const backends = new Map<ModelName, string>();
 
 // 有 WebGPU 时这几个模型放到显卡上跑（实测比多线程 WASM 快 2-3 倍，结果一致）；
 // 兜底用的语义特征模型输入尺寸不固定且很少用到，留在 WASM 上。
-const GPU_MODELS: ReadonlySet<ModelName> = new Set<ModelName>(['matting', 'matting2', 'extractor', 'matcher']);
+const GPU_MODELS: ReadonlySet<ModelName> = new Set<ModelName>(['matting', 'matting2', 'matting3', 'extractor', 'matcher']);
 const hasWebGPU = 'gpu' in navigator;
 
 async function createSession(bytes: ArrayBuffer, provider: 'webgpu' | 'wasm'): Promise<SessionLike> {
@@ -258,7 +259,7 @@ const handleRun = async (ev: MessageEvent<RunRequest>) => {
       {
         ort: ort as unknown as OrtLike,
         getSession: (name) => getSession(name, id),
-        // 补充抠图模型是半精度的，只在 WebGPU 上跑；没有 WebGPU 时跳过（少下 90 MB，深色衣服可能抠不全）
+        // 两个补充抠图模型是半精度的，只在 WebGPU 上跑；没有 WebGPU 时跳过（少下约 180 MB，深色衣服可能抠不全）
         refineMatting: hasWebGPU,
         onStage: (stage) => {
           const now = performance.now();

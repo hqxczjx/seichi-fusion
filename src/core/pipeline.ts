@@ -4,14 +4,15 @@ import { estimateAlignment, matchFeatures, placementFromMatrix, type AlignResult
 import { extractFeatures } from './features.ts';
 import type { RGBAImage } from './image.ts';
 import { matchKeypoints } from './matcher.ts';
-import { alphaBounds, mergeAlphas, segmentCharacter, segmentPerson } from './matting.ts';
+import { alphaBounds, mergeDarkRegions, segmentCharacter, segmentSalient } from './matting.ts';
 import type { OrtLike, SessionLike } from './ort-types.ts';
 
-export type ModelName = 'matting' | 'matting2' | 'extractor' | 'matcher' | 'features';
+export type ModelName = 'matting' | 'matting2' | 'matting3' | 'extractor' | 'matcher' | 'features';
 
 export const MODEL_FILES: Record<ModelName, string> = {
   matting: 'anime-seg.onnx',
   matting2: 'ormbg-fp16.onnx',
+  matting3: 'isnet-general-fp16.onnx',
   extractor: 'aliked-n16rot-640.onnx',
   matcher: 'lightglue-aliked.onnx',
   features: 'dinov2-reg-small.onnx',
@@ -106,7 +107,7 @@ export interface PipelineEnv {
   ort: OrtLike;
   /** 按需加载模型（features 只有在兜底时才会被请求） */
   getSession(name: ModelName): Promise<SessionLike>;
-  /** 是否启用第二个抠图模型来补回深色衣服（多下载约 90 MB，浏览器里只在有 WebGPU 时开启）。默认开启 */
+  /** 是否启用两个补充抠图模型来补回深色衣服（多下载约 180 MB，浏览器里只在有 WebGPU 时开启）。默认开启 */
   refineMatting?: boolean;
   onStage?(stage: Stage): void;
 }
@@ -117,8 +118,9 @@ export async function runPipeline(env: PipelineEnv, anime: RGBAImage, real: RGBA
   env.onStage?.('matting');
   let alpha = await segmentCharacter(ort, await env.getSession('matting'), anime);
   if (env.refineMatting !== false) {
-    const person = await segmentPerson(ort, await env.getSession('matting2'), anime);
-    alpha = mergeAlphas(alpha, person, anime.width, anime.height);
+    const person = await segmentSalient(ort, await env.getSession('matting2'), anime, 0);
+    const salient = await segmentSalient(ort, await env.getSession('matting3'), anime, 0.5);
+    alpha = mergeDarkRegions(anime, alpha, [person, salient]);
   }
   const bounds = alphaBounds(alpha, anime.width, anime.height);
   const anchor = bounds

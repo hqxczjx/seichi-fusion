@@ -1,4 +1,4 @@
-// 下载推理所需的 ONNX 模型到 public/models/（约 410 MB，只需执行一次）。
+// 下载推理所需的 ONNX 模型到 public/models/（约 500 MB，只需执行一次）。
 // 国内网络可设置镜像：HF_ENDPOINT=https://hf-mirror.com npm run models
 import { createWriteStream, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -14,6 +14,8 @@ const MODELS = [
   { file: 'anime-seg.onnx', url: `${HF}/skytnt/anime-seg/resolve/main/isnetis.onnx` },
   // 补充抠图模型（ormbg，Apache-2.0，半精度）：补回 anime-seg 漏掉的深色衣服
   { file: 'ormbg-fp16.onnx', url: `${HF}/onnx-community/ormbg-ONNX/resolve/main/onnx/model_fp16.onnx` },
+  // 补充抠图模型（通用 ISNet，半精度）：补回前两个都漏掉的深色裤子等
+  { file: 'isnet-general-fp16.onnx', url: `${HF}/onnx-community/ISNet-ONNX/resolve/main/onnx/model_fp16.onnx` },
   // 关键点提取 + 匹配（ALIKED BSD-3 / LightGlue Apache-2.0，ONNX 导出来自 bukuroo/ALIKED-LightGlue-ONNX）
   { file: 'aliked-n16rot-640.onnx', url: `${HF}/bukuroo/ALIKED-LightGlue-ONNX/resolve/main/aliked-n16rot-top2k-640.onnx` },
   { file: 'lightglue-aliked.onnx', url: `${HF}/bukuroo/ALIKED-LightGlue-ONNX/resolve/main/lightglue_for_aliked.onnx` },

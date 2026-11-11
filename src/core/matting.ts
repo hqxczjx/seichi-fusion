@@ -46,24 +46,28 @@ export async function segmentCharacter(
 }
 
 /**
- * 第二个抠图模型（ormbg，和 anime-seg 同为 ISNet 结构，但用人像数据训练）。
- * anime-seg 在"深色衣服 + 深色或低对比背景"时会把黑外套、黑裤子抠丢，ormbg 常能补回来；
- * 反过来 ormbg 单独用会漏掉一些动漫人物，所以两者配合使用，见 mergeAlphas。
+ * 补充抠图模型（都是 ISNet 结构，输入输出格式相同，只是训练数据不同）：
+ *  - ormbg：用人像数据训练；
+ *  - isnet-general：通用显著物体分割。
+ * anime-seg 在"深色衣服 + 深色或低对比背景"时会把黑外套、黑裤子抠丢，这两个模型各能补回一部分；
+ * 但它们单独用都会漏人或多抠背景，所以只拿来补洞，见 mergeDarkRegions。
+ * mean 是输入归一化的均值：ormbg 为 0，isnet-general 为 0.5。
  */
-export async function segmentPerson(
+export async function segmentSalient(
   ort: OrtLike,
   session: SessionLike,
   img: RGBAImage,
+  mean: number,
   size = 1024,
 ): Promise<Float32Array> {
-  // ormbg 的预处理：整幅图直接拉伸成正方形，像素值 0-1，不做均值方差归一化
+  // 整幅图直接拉伸成正方形
   const rgb = rgbaToRgbFloat(img, size, size);
   const plane = size * size;
   const input = new Float32Array(3 * plane);
   for (let i = 0; i < plane; i++) {
-    input[i] = rgb[i * 3];
-    input[plane + i] = rgb[i * 3 + 1];
-    input[2 * plane + i] = rgb[i * 3 + 2];
+    input[i] = rgb[i * 3] - mean;
+    input[plane + i] = rgb[i * 3 + 1] - mean;
+    input[2 * plane + i] = rgb[i * 3 + 2] - mean;
   }
   const out = await session.run({
     [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, size, size]),
@@ -85,55 +89,87 @@ export async function segmentPerson(
 }
 
 /**
- * 合并两个模型的结果：以 anime-seg 为主，ormbg 只用来"补洞"。
- * ormbg 给出的每一块连通区域，只有和 anime-seg 认定的人物有足够重叠才采纳——
- * 这样能补回同一个人身上被漏掉的深色衣服，又不会把 ormbg 误认的路人、物件带进来。
+ * 用补充模型的结果给 anime-seg 补洞。补进来的像素必须同时满足三条，缺一不可：
+ *  1. 是深色的——要补的就是被漏掉的深色衣物；浅色的地面、柱子即使被补充模型认成前景也不采纳；
+ *  2. 与 anime-seg 认定的人物连在一起；
+ *  3. 所在的那一块与人物有足够长的接触边——裤子接着上衣、外套裹着身体，接触边都很长；
+ *     而人物手边恰好挨着的深色物件（灯笼、栏杆）只在一两个点上相碰。
  */
-export function mergeAlphas(primary: Float32Array, extra: Float32Array, width: number, height: number): Float32Array {
+export function mergeDarkRegions(img: RGBAImage, primary: Float32Array, extras: Float32Array[]): Float32Array {
+  const { width, height, data } = img;
   const n = width * height;
-  const label = new Int32Array(n); // 0 = 未访问/背景
+  const TH = 0.3;
+
+  // 候选像素：补充模型认为是前景 × 深色程度
+  const add = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (primary[i] > 0.5) continue;
+    let e = 0;
+    for (const x of extras) if (x[i] > e) e = x[i];
+    if (e <= 0.15) continue;
+    const luma = (0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]) / 255;
+    const dark = luma <= 0.28 ? 1 : luma >= 0.42 ? 0 : (0.42 - luma) / 0.14;
+    // 补充模型在这些区域往往只给出半透明的置信度，放大一些，不然补回来的衣服是半透明的
+    add[i] = Math.min(1, e * 1.8) * dark;
+  }
+
+  // 把候选像素分成连通块，统计每块的面积和与人物相邻的像素数
+  const label = new Int32Array(n);
   const stack = new Int32Array(n);
   const keep: boolean[] = [false];
   let next = 1;
+  const touchesPrimary = (i: number): boolean => {
+    const x = i % width;
+    return (
+      (x > 0 && primary[i - 1] > 0.5) ||
+      (x < width - 1 && primary[i + 1] > 0.5) ||
+      (i >= width && primary[i - width] > 0.5) ||
+      (i < n - width && primary[i + width] > 0.5)
+    );
+  };
   for (let start = 0; start < n; start++) {
-    if (label[start] !== 0 || extra[start] <= 0.5) continue;
+    if (label[start] !== 0 || add[start] <= TH) continue;
     let top = 0;
     stack[top++] = start;
     label[start] = next;
     let area = 0;
-    let shared = 0;
+    let touch = 0;
     while (top > 0) {
       const i = stack[--top];
       area++;
-      if (primary[i] > 0.5) shared++;
+      if (touchesPrimary(i)) touch++;
       const x = i % width;
-      if (x > 0 && label[i - 1] === 0 && extra[i - 1] > 0.5) {
+      if (x > 0 && label[i - 1] === 0 && add[i - 1] > TH) {
         label[i - 1] = next;
         stack[top++] = i - 1;
       }
-      if (x < width - 1 && label[i + 1] === 0 && extra[i + 1] > 0.5) {
+      if (x < width - 1 && label[i + 1] === 0 && add[i + 1] > TH) {
         label[i + 1] = next;
         stack[top++] = i + 1;
       }
-      if (i >= width && label[i - width] === 0 && extra[i - width] > 0.5) {
+      if (i >= width && label[i - width] === 0 && add[i - width] > TH) {
         label[i - width] = next;
         stack[top++] = i - width;
       }
-      if (i < n - width && label[i + width] === 0 && extra[i + width] > 0.5) {
+      if (i < n - width && label[i + width] === 0 && add[i + width] > TH) {
         label[i + width] = next;
         stack[top++] = i + width;
       }
     }
-    keep.push(shared >= 0.15 * area);
+    // 接触边长度要与这一块的"尺寸"（面积开方）成比例
+    keep.push(touch >= TOUCH_RATIO * Math.sqrt(area));
     next++;
   }
-  const out = new Float32Array(n);
+
+  const out = Float32Array.from(primary);
   for (let i = 0; i < n; i++) {
-    const e = label[i] !== 0 && keep[label[i]] ? extra[i] : 0;
-    out[i] = primary[i] > e ? primary[i] : e;
+    if (label[i] !== 0 && keep[label[i]] && add[i] > out[i]) out[i] = add[i];
   }
   return out;
 }
+
+/** 新增的一块区域，与人物相邻的像素数至少要达到 √面积 的这个倍数 */
+const TOUCH_RATIO = 0.3;
 
 /** alpha 中超过阈值的像素的包围盒；没有前景时返回 null。 */
 export function alphaBounds(

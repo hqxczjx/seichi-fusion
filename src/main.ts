@@ -136,7 +136,8 @@ const STAGE_TEXT: Record<Stage, string> = {
 };
 const MODEL_LABEL: Record<ModelName, string> = {
   matting: '人物抠图模型',
-  matting2: '人物抠图补充模型',
+  matting2: '人物抠图补充模型（1/2）',
+  matting3: '人物抠图补充模型（2/2）',
   extractor: '关键点模型',
   matcher: '场景匹配模型',
   features: '语义特征模型',
