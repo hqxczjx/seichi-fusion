@@ -185,6 +185,12 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
       barFill.style.width = msg.total ? `${(msg.loaded / msg.total) * 100}%` : '0';
       break;
     }
+    case 'retry': {
+      const mb = (n: number) => (n / 1e6).toFixed(0);
+      statusBox.hidden = false;
+      statusText.textContent = `下载${MODEL_LABEL[msg.model]}时连接中断，正在从 ${mb(msg.loaded)} MB 处继续…`;
+      break;
+    }
     case 'result':
       busy = false;
       runBtn.disabled = false;

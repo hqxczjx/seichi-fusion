@@ -33,5 +33,6 @@ export interface ResultPayload {
 export type WorkerMessage =
   | { type: 'stage'; id: number; stage: Stage }
   | { type: 'download'; id: number; model: ModelName; loaded: number; total: number }
+  | { type: 'retry'; id: number; model: ModelName; loaded: number; total: number }
   | { type: 'result'; id: number; result: ResultPayload }
   | { type: 'error'; id: number; message: string };

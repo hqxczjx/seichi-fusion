@@ -37,6 +37,129 @@ let currentStage: Stage = 'matting';
 const post = (msg: WorkerMessage, transfer: Transferable[] = []) =>
   (self as DedicatedWorkerGlobalScope).postMessage(msg, transfer);
 
+/** 没下完的模型留在内存里：连接断了接着下，整次失败后再点"开始融合"也是接着下 */
+interface Partial {
+  chunks: Uint8Array[];
+  loaded: number;
+  total: number;
+}
+const partials = new Map<string, Partial>();
+
+/** 连续这么多次重连都没有新数据进来，才算下载失败 */
+const MAX_IDLE_RETRIES = 6;
+/** 这么久收不到任何数据就当作连接卡死，主动断开重连 */
+const STALL_MS = 30_000;
+
+class FatalDownloadError extends Error {}
+
+/**
+ * 带断线重试 + 断点续传（HTTP Range）的下载。
+ * 模型有一两百 MB，慢网络下中途断线很常见，不能每次都从头来。
+ */
+async function downloadWithResume(url: string, name: ModelName, id: number): Promise<Uint8Array<ArrayBuffer>> {
+  let part = partials.get(url);
+  if (!part) {
+    part = { chunks: [], loaded: 0, total: 0 };
+    partials.set(url, part);
+  }
+  const report = () => post({ type: 'download', id, model: name, loaded: part.loaded, total: part.total });
+  let idleRetries = 0;
+  let lastError = '';
+
+  for (;;) {
+    const before = part.loaded;
+    const ctrl = new AbortController();
+    let stall: ReturnType<typeof setTimeout> | undefined;
+    const kick = () => {
+      clearTimeout(stall);
+      stall = setTimeout(() => ctrl.abort(), STALL_MS);
+    };
+    try {
+      kick();
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: part.loaded > 0 ? { Range: `bytes=${part.loaded}-` } : undefined,
+      });
+      if (res.status === 416 && part.loaded > 0) {
+        // 续传位置不被接受（文件变了？）：丢掉已有部分，从头来
+        part.chunks = [];
+        part.loaded = 0;
+        part.total = 0;
+        continue;
+      }
+      if (!res.ok || !res.body) {
+        const msg = `模型 ${MODEL_FILES[name]} 下载失败（HTTP ${res.status}）。`;
+        // 4xx 重试也没用（408 超时 / 429 限流除外）
+        if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+          throw new FatalDownloadError(msg);
+        }
+        throw new Error(msg);
+      }
+      // dev server 对不存在的文件会回退到 index.html，这里顺手识别出来
+      if ((res.headers.get('content-type') ?? '').includes('text/html')) {
+        throw new FatalDownloadError(`找不到模型 ${MODEL_FILES[name]}。请先运行 npm run models 下载模型。`);
+      }
+      if (res.status === 206) {
+        // Content-Range: bytes 起-止/总长
+        const m = /bytes (\d+)-\d+\/(\d+)/.exec(res.headers.get('content-range') ?? '');
+        if (!m || Number(m[1]) !== part.loaded) {
+          throw new Error('服务器返回的续传位置不对');
+        }
+        part.total = Number(m[2]);
+      } else {
+        // 200：服务器不支持续传（或这是第一次请求），只能从头收
+        part.chunks = [];
+        part.loaded = 0;
+        part.total = Number(res.headers.get('content-length') ?? 0);
+      }
+
+      const reader = res.body.getReader();
+      let lastReport = part.loaded;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        kick();
+        part.chunks.push(value);
+        part.loaded += value.length;
+        if (part.loaded - lastReport > 5e5) {
+          lastReport = part.loaded;
+          report();
+        }
+      }
+      if (part.total && part.loaded < part.total) throw new Error('连接提前断开');
+      break; // 下完了
+    } catch (err) {
+      if (err instanceof FatalDownloadError) {
+        partials.delete(url);
+        throw err;
+      }
+      lastError = ctrl.signal.aborted ? '长时间收不到数据' : err instanceof Error ? err.message : String(err);
+      // 只要这一轮有新数据进来，就不算"原地踏步"
+      idleRetries = part.loaded > before ? 0 : idleRetries + 1;
+      if (idleRetries >= MAX_IDLE_RETRIES) {
+        const mb = (part.loaded / 1e6).toFixed(0);
+        throw new Error(
+          `模型 ${MODEL_FILES[name]} 下载中断（${lastError}），已下载 ${mb} MB。请检查网络后再点"开始融合"，会从断点继续。`,
+        );
+      }
+      post({ type: 'retry', id, model: name, loaded: part.loaded, total: part.total });
+      await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** idleRetries)));
+    } finally {
+      clearTimeout(stall);
+    }
+  }
+
+  report();
+  const buf = new Uint8Array(part.loaded);
+  let off = 0;
+  for (const c of part.chunks) {
+    buf.set(c, off);
+    off += c.length;
+  }
+  partials.delete(url);
+  return buf;
+}
+
 async function fetchModel(name: ModelName, id: number): Promise<ArrayBuffer> {
   const url = modelUrl(name);
   let cache: Cache | null = null;
@@ -48,35 +171,7 @@ async function fetchModel(name: ModelName, id: number): Promise<ArrayBuffer> {
     cache = null; // 无痕模式等场景下 Cache API 不可用：每次重新下载
   }
 
-  const res = await fetch(url);
-  if (!res.ok || !res.body) {
-    throw new Error(`模型 ${MODEL_FILES[name]} 下载失败（HTTP ${res.status}）。`);
-  }
-  // dev server 对不存在的文件会回退到 index.html，这里顺手识别出来
-  if ((res.headers.get('content-type') ?? '').includes('text/html')) {
-    throw new Error(`找不到模型 ${MODEL_FILES[name]}。请先运行 npm run models 下载模型。`);
-  }
-  const total = Number(res.headers.get('content-length') ?? 0);
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  let lastReport = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    if (loaded - lastReport > 2e6 || loaded === total) {
-      lastReport = loaded;
-      post({ type: 'download', id, model: name, loaded, total });
-    }
-  }
-  const buf = new Uint8Array(loaded);
-  let off = 0;
-  for (const c of chunks) {
-    buf.set(c, off);
-    off += c.length;
-  }
+  const buf = await downloadWithResume(url, name, id);
   // 下载结束后把提示换回当前阶段（接下来是模型初始化 + 推理）
   post({ type: 'stage', id, stage: currentStage });
   try {
